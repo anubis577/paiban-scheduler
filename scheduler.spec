@@ -3,7 +3,7 @@
 block_cipher = None
 
 a = Analysis(
-    ['scheduler.py'],
+    ['run.py'],
     pathex=[],
     binaries=[],
     datas=[
@@ -31,7 +31,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='排班管理',
+    name='排班管理系统',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -52,5 +52,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='排班管理',
+    name='排班管理系统',
 )
