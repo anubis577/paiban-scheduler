@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# PyInstaller
+*.spec.user
+build/
+dist/
+*.egg-info/
+
+# Git
+.git
+
+# Build
+build/
+dist/
+*.spec.user
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local database (use the one in repo)
+*.db
+
+# Logs
+*.log

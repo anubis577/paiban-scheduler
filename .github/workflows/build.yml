@@ -1,0 +1,58 @@
+# 构建 Windows EXE 和 macOS 应用
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller openpyxl pillow PyQt5
+      
+      - name: Build Windows EXE
+        run: |
+          pyinstaller scheduler.spec --clean --noconfirm
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/排班管理系统/
+          retention-days: 5
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          pip install pyinstaller openpyxl pillow PyQt5
+      
+      - name: Build macOS App
+        run: |
+          pyinstaller scheduler.spec --clean --noconfirm
+      
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: dist/排班管理系统/
+          retention-days: 5
