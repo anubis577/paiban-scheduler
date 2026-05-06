@@ -23,7 +23,7 @@ jobs:
 
       - name: Build EXE
         run: |
-          pyinstaller scheduler.spec --onefile
+          pyinstaller scheduler.spec
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
