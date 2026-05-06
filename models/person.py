@@ -5,7 +5,7 @@
 
 class Person:
     """人员类(用于排班)"""
-    def __init__(self, id, name, level, score=0, active=True, score_modifier=0, seat_history=None, total_hours=0, locked=False, position=None, last_seat_app_name=None):
+    def __init__(self, id, name, level, score=0, active=True, score_modifier=0, seat_history=None, total_count=0, locked=False, position=None, last_seat_app_name=None):
         self.id = id
         self.name = name
         self.level = level
@@ -13,7 +13,7 @@ class Person:
         self.active = active
         self.score_modifier = score_modifier  # 规则分数修改
         self.seat_history = seat_history or {}  # {app_name: count}
-        self.total_hours = total_hours  # 最近30天总时长(分钟)
+        self.total_count = total_count  # 最近30天执勤次数
         self.locked = locked  # 是否锁定（手动指定的排班不动）
         self.position = position  # 锁定位置索引（0=A, 1=B, 2=C, 3=D）
         self.last_seat_app_name = last_seat_app_name  # 上次安排的席位

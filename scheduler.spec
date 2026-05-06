@@ -3,11 +3,10 @@
 block_cipher = None
 
 a = Analysis(
-    ['run.py'],
+    ['main.py'],
     pathex=[],
     binaries=[],
     datas=[
-        ('scheduler.db', '.'),
     ],
     hiddenimports=[
         'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets',

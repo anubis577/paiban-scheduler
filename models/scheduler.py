@@ -29,90 +29,49 @@ class ShiftScheduler:
         # C2可以和C2同席
         return True
     
-    def can_add_to_seat(self, seat_people, new_person, seat, required_score=5):
+    def can_add_to_seat(self, seat_people, new_person, seat):
         """检查是否可以添加到现有席位
         规则：
         - C1不能与C1/C2同席
-        - 4人席位：分别检查ABC和BCD组合（C1不超过1，C1和C2不同时出现，C2各组合不超过2个）
-        - 非4人席位：C2不能超过2个
+        - C2不能超过2个（非4人席位）
+        分数检查由check_seat_score统一进行
         """
-        # 先检查等级兼容性（两人之间）
+        # 检查等级兼容性（两人之间）
         for p in seat_people:
             if not self.can_place_together(p, new_person):
                 return False
         
-        # 4人席位：检查如果凑齐4人时的组合是否合法
-        if seat and seat.persons_count == 4 and len(seat_people) >= 2:
-            # 模拟添加新人后的完整列表
-            test_people = seat_people + [new_person]
-            
-            # 需要凑齐4人才检查
-            if len(test_people) == 4:
-                # ABC组合检查
-                abc_c1 = sum(1 for p in test_people[:3] if p.level == 'C1')
-                abc_c2 = sum(1 for p in test_people[:3] if p.level == 'C2')
-                if abc_c1 > 1:  # C1超过1个
-                    return False
-                if abc_c1 > 0 and abc_c2 > 0:  # C1和C2同席
-                    return False
-                if abc_c2 > 2:  # ABC组合中C2超过2个
-                    return False
-                
-                # BCD组合检查
-                bcd_c1 = sum(1 for p in test_people[1:4] if p.level == 'C1')
-                bcd_c2 = sum(1 for p in test_people[1:4] if p.level == 'C2')
-                if bcd_c1 > 1:
-                    return False
-                if bcd_c1 > 0 and bcd_c2 > 0:
-                    return False
-                if bcd_c2 > 2:  # BCD组合中C2超过2个
-                    return False
-        else:
-            # 非4人席位：C2不能超过2个
+        # C2数量限制（非4人席位）
+        if seat and seat.persons_count != 4:
             current_c2_count = sum(1 for p in seat_people if p.level == 'C2')
             new_is_c2 = new_person.level == 'C2'
             if current_c2_count + new_is_c2 > 2:
                 return False
         
-        # 检查分数是否满足要求（>=3人时总分>=required_score，4人席位分别检查ABC/BCD）
-        all_people = seat_people + [new_person]
-        if len(all_people) >= 3:
-            if seat and seat.persons_count == 4:
-                # 4人席位：分别检查ABC和BCD组合
-                # 假设按添加顺序排列位置
-                if len(all_people) >= 3:
-                    # ABC组合（位置0,1,2）
-                    abc_score = sum(p.effective_score for p in all_people[:3])
-                    if abc_score < required_score:
-                        return False
-                if len(all_people) == 4:
-                    # BCD组合（位置1,2,3）
-                    bcd_score = sum(p.effective_score for p in all_people[1:4])
-                    if bcd_score < required_score:
-                        return False
-            else:
-                # 非4人席位：检查总分
-                total_score = sum(p.effective_score for p in all_people)
-                if total_score < required_score:
-                    return False
-        
         return True
 
     def calc_balance_score(self, person, seat_id, seats_dict):
         """计算人员到席位的均衡分数（越低越优先选择）
-        考虑：1. 该席位历史安排次数越少越好
-              2. 人员总工时越多越不优先
-              3. 同一人同一席位历史次数越少越好
+        考虑：1. 各席位历史次数方差（方差越小越均衡）
+              2. 该席位历史次数越少越好
+              3. 人员总工时越多越不优先
               4. 避免连续安排到上次同一席位
         """
         score = 0
+
+        # 计算各席位次数的方差：该人员在所有席位的历史次数分布是否均衡
+        seat_counts = [person.seat_history.get(s.app_name, 0) for s in self.seats if s.available]
+        if seat_counts:
+            mean_count = sum(seat_counts) / len(seat_counts)
+            variance = sum((c - mean_count) ** 2 for c in seat_counts) / len(seat_counts)
+            score += variance * 30  # 方差越大（分配越不均），得分越高
 
         # 同一席位历史安排次数越多，得分越高（不优先）
         history_seat_count = person.seat_history.get(seat_id, 0)
         score += history_seat_count * 10
 
-        # 人员总工时（越多越不优先）
-        score += person.total_hours / 60 * 2  # 每小时加2分
+        # 人员总次数（越多越不优先）
+        score += person.total_count * 2  # 每次加2分
 
         # 避免连续安排到上次同一席位
         if person.last_seat_app_name and seat_id == person.last_seat_app_name:
@@ -132,7 +91,7 @@ class ShiftScheduler:
                 continue
 
             # 检查是否能加入
-            if not self.can_add_to_seat(seats_dict.get(seat.app_name, []), person, seat, seat.required_score):
+            if not self.can_add_to_seat(seats_dict.get(seat.app_name, []), person, seat):
                 continue
 
             # 计算均衡分数
@@ -144,36 +103,22 @@ class ShiftScheduler:
         return best_seat
     
     def check_seat_score(self, seat_people, required_score, persons_count=3):
-        """检查席位内所有人员是否满足分数要求：4人席位分别检查ABC和BCD组合"""
+        """检查席位内所有人员是否满足分数要求
+        注意：此方法只做基础检查（人数<3跳过，总分<required_score返回False）
+        详细的时段重叠分数检查由check_seat_score函数统一进行
+        """
         if required_score <= 0:
             return True
         
-        # 转换为列表以便按位置索引
         people_list = list(seat_people)
         
-        # 4人席位：分别检查ABC和BCD组合
-        if persons_count == 4 and len(people_list) >= 3:
-            # ABC组合（位置0,1,2）
-            abc_people = [p for p in people_list if hasattr(p, 'position') and p.position in ['A', 'B', 'C']]
-            if len(abc_people) >= 3:
-                abc_score = sum(p.effective_score for p in abc_people)
-                if abc_score < required_score:
-                    return False
-            
-            # BCD组合（位置1,2,3）
-            bcd_people = [p for p in people_list if hasattr(p, 'position') and p.position in ['B', 'C', 'D']]
-            if len(bcd_people) >= 3:
-                bcd_score = sum(p.effective_score for p in bcd_people)
-                if bcd_score < required_score:
-                    return False
-            
+        # 人数不足3人不检查
+        if len(people_list) < 3:
             return True
-        else:
-            # 非4人席位：直接检查总分
-            if len(people_list) < 3:
-                return True
-            total_score = sum(p.effective_score for p in people_list)
-            return total_score >= required_score
+        
+        # 检查总分（粗略检查，详细检查由check_seat_score函数进行）
+        total_score = sum(p.effective_score for p in people_list)
+        return total_score >= required_score
 
     def generate_schedule(self):
         """生成排班表 - 使用均衡算法安排人员"""
@@ -195,7 +140,7 @@ class ShiftScheduler:
             # 按均衡分数排序，优先安排分数高（需要优先安排）的人员
             # 分数高意味着：历史工时少、同一席位安排少
             persons_copy.sort(key=lambda p: (
-                p.total_hours,  # 工时少的先安排
+                p.total_count,  # 次数少的先安排
                 -sum(p.seat_history.get(s.app_name, 0) for s in self.seats)  # 历史席位次数少的先安排
             ))
 
@@ -236,10 +181,16 @@ class ShiftScheduler:
                     # sid就是app_name字符串
                     selections[sid] = [p.name if p else None for p in plist]
                 
-                persons_dict = {p.name: {'name': p.name, 'level': p.level} for p in self.persons}
-                seats_dict = {s.app_name: {'name': s.app_name, 'count': s.persons_count, 'available': s.available} for s in self.seats}
+                persons_dict = {p.name: {'name': p.name, 'level': p.level, 'score': p.score, 'score_modifier': p.score_modifier} for p in self.persons}
+                seats_dict = {s.app_name: {'name': s.app_name, 'count': s.persons_count, 'available': s.available, 'required_score': s.required_score, 'template_id': s.template_id} for s in self.seats}
                 
-                warnings = check_all_rules(selections, seats_dict, persons_dict)
+                # 构建 template_slots: {seat_id: [slot_dict...]}
+                template_slots = {}
+                for s in self.seats:
+                    if s.template_id and hasattr(s, '_time_slots') and s._time_slots:
+                        template_slots[s.app_name] = s._time_slots
+                
+                warnings = check_all_rules(selections, seats_dict, persons_dict, template_slots if template_slots else None)
                 if warnings:
                     valid = False
             
@@ -249,7 +200,7 @@ class ShiftScheduler:
                     continue
                 seat_people = seats.get(seat.app_name, [])
                 for p in seat_people:
-                    balance_score += p.total_hours
+                    balance_score += p.total_count
 
             if valid:
                 current_assigned = len(assigned)
@@ -334,7 +285,7 @@ class ShiftScheduler:
             
             # 按均衡分数排序解锁人员（工时少的先安排）
             unlocked_persons.sort(key=lambda p: (
-                p.total_hours,
+                p.total_count,
                 -sum(p.seat_history.get(s.app_name, 0) for s in self.seats)
             ))
             
@@ -366,7 +317,25 @@ class ShiftScheduler:
                     valid = False
                     break
             
+            # 统一规则检查：调用 check_all_rules（含C1/C2时间重叠规则）
             if valid:
+                selections = {}
+                for seat_id_str, pos_map in seats.items():
+                    selections[seat_id_str] = [p.name if p else None for p in pos_map.values()]
+                
+                persons_dict = {p.name: {'name': p.name, 'level': p.level, 'score': p.score, 'score_modifier': p.score_modifier} for p in all_persons}
+                seats_dict = {s.app_name: {'name': s.app_name, 'count': s.persons_count, 'available': s.available, 'required_score': s.required_score, 'template_id': s.template_id} for s in self.seats}
+                
+                # 构建 template_slots: {seat_id: [slot_dict...]}
+                template_slots = {}
+                for s in self.seats:
+                    if s.template_id and hasattr(s, '_time_slots') and s._time_slots:
+                        template_slots[s.app_name] = s._time_slots
+                
+                warnings = check_all_rules(selections, seats_dict, persons_dict, template_slots if template_slots else None)
+                if warnings:
+                    valid = False
+            
                 current_assigned = len(assigned)
                 if current_assigned > best_assigned:
                     best_assigned = current_assigned
@@ -484,7 +453,7 @@ class ShiftScheduler:
                 continue
             
             current_people = seats.get(seat.app_name, [])
-            if not self.can_add_to_seat(current_people, person, seat, seat.required_score):
+            if not self.can_add_to_seat(current_people, person, seat):
                 continue
             
             # 计算均衡分数
@@ -611,63 +580,138 @@ def check_duplicate(selections: Dict[str, List[str]]) -> List[RuleWarning]:
     return warnings
 
 
-def check_seat_score(selections: Dict[str, List[str]], seats: Dict, persons: Dict) -> List[RuleWarning]:
-    """检查席位分数限制：4人席位分别检查ABC和BCD组合"""
+def check_seat_score(selections: Dict[str, List[str]], seats: Dict, persons: Dict, template_slots: Dict[str, List] = None) -> List[RuleWarning]:
+    """检查席位分数限制：根据时段重叠检查任意2人组合的分数和≥required_score"""
     warnings = []
-    
+
+    # 解析时间段为分钟数（前后移除10分钟缓冲）
+    def parse_time(time_str):
+        if not time_str:
+            return None
+        try:
+            parts = time_str.split('-')
+            if len(parts) != 2:
+                return None
+            start = int(parts[0])
+            end = int(parts[1])
+            start_min = start // 100 * 60 + start % 100
+            end_min = end // 100 * 60 + end % 100
+            start_min += 10
+            end_min -= 10
+            if start_min >= end_min:
+                return None
+            return (start_min, end_min)
+        except:
+            return None
+
+    # 检查两个时间段是否重叠
+    def times_overlap(t1, t2):
+        if not t1 or not t2:
+            return False
+        return not (t1[1] <= t2[0] or t2[1] <= t1[0])
+
+    position_to_index = {'A': 0, 'B': 1, 'C': 2, 'D': 3}
+
+    # 为每个席位构建时段映射
+    seat_times = {}  # seat_times[seat_id][位置索引] = [time_range, ...]
+    seat_asst_times = {}  # seat_asst_times[seat_id][slot_idx] = [time_range, ...]
+    if template_slots:
+        for seat_id, slots in template_slots.items():
+            seat_times[seat_id] = {0: [], 1: [], 2: [], 3: []}
+            seat_asst_times[seat_id] = {}
+            for slot_idx, slot in enumerate(slots):
+                ctrl_time = slot.get('ctrl_time', '')
+                ctrl_pos = slot.get('ctrl_position', '')
+                if ctrl_pos and ctrl_time:
+                    idx = position_to_index.get(ctrl_pos)
+                    if idx is not None:
+                        t = parse_time(ctrl_time)
+                        if t:
+                            seat_times[seat_id][idx].append(t)
+
+                asst_time = slot.get('asst_time', '')
+                if asst_time:
+                    t = parse_time(asst_time)
+                    if t:
+                        if slot_idx not in seat_asst_times[seat_id]:
+                            seat_asst_times[seat_id][slot_idx] = []
+                        seat_asst_times[seat_id][slot_idx].append(t)
+
     for seat_id_str, names in selections.items():
         if seat_id_str not in seats:
             continue
-        
+
         seat = seats[seat_id_str]
-        required_score = seat.get('required', 0)
-        persons_count = seat.get('count', 3)
+        required_score = seat.get('required_score', 0)
         if required_score <= 0:
             continue
-        
+
         # 获取有效选择的人员
         selected = [n for n in names if n]
-        # 席位分数限制：选择3人及以上时才判断
-        if len(selected) < 3:
+        if len(selected) < 2:
             continue
-        
-        # 4人席位：分别检查ABC和BCD组合
-        if persons_count == 4:
-            # ABC组合（位置0,1,2）
-            abc_names = selected[:3]
-            if len(abc_names) >= 3:
-                abc_score = sum(persons.get(n, {}).get('score', 0) for n in abc_names)
-                if abc_score < required_score:
-                    seat_name = seat.get('name', seat_id_str)
-                    warnings.append(RuleWarning(
-                        RuleType.SCORE,
-                        f"{seat_name}: ABC组合分数不足({abc_score}/{required_score}分)",
-                        seat_id_str
-                    ))
-                    continue  # 已有违规，不再检查BCD
-            
-            # BCD组合（位置1,2,3）
-            if len(selected) >= 4:
-                bcd_names = selected[1:4]
-                bcd_score = sum(persons.get(n, {}).get('score', 0) for n in bcd_names)
-                if bcd_score < required_score:
-                    seat_name = seat.get('name', seat_id_str)
-                    warnings.append(RuleWarning(
-                        RuleType.SCORE,
-                        f"{seat_name}: BCD组合分数不足({bcd_score}/{required_score}分)",
-                        seat_id_str
-                    ))
-        else:
-            # 非4人席位：直接检查总分
-            total_score = sum(persons.get(n, {}).get('score', 0) for n in selected)
-            if total_score < required_score:
-                seat_name = seat.get('name', seat_id_str)
-                warnings.append(RuleWarning(
-                    RuleType.SCORE,
-                    f"{seat_name}: 分数不足({total_score}/{required_score}分)",
-                    seat_id_str
-                ))
-    
+
+        # 为每个人员收集所有时段
+        person_times = {}  # {name: [time_range, ...]}
+        for pos_idx, name in enumerate(names):
+            if not name:
+                continue
+            if name not in person_times:
+                person_times[name] = []
+
+            # 管制时段
+            if seat_id_str in seat_times and pos_idx in seat_times[seat_id_str]:
+                for t in seat_times[seat_id_str][pos_idx]:
+                    person_times[name].append(t)
+
+            # 助理时段 - 根据asst_position找到对应slot的asst_time
+            # asst_position 表示这个slot的助理时段是给哪个位置的人
+            # 例如 asst_position='C' 表示位置2的人要值这个slot的助理班
+            index_to_position = {0: 'A', 1: 'B', 2: 'C', 3: 'D'}
+            if template_slots and seat_id_str in template_slots and seat_id_str in seat_asst_times:
+                slot_list = template_slots[seat_id_str]
+                # 构建 asst_position -> slot_idx 列表的映射
+                asst_pos_to_slot_idxs = {}  # {'C': [0], 'D': [1]}
+                for slot_idx, slot in enumerate(slot_list):
+                    asst_pos = slot.get('asst_position', '')
+                    if asst_pos:
+                        if asst_pos not in asst_pos_to_slot_idxs:
+                            asst_pos_to_slot_idxs[asst_pos] = []
+                        asst_pos_to_slot_idxs[asst_pos].append(slot_idx)
+
+                # 获取当前位置对应的字母
+                my_pos_letter = index_to_position.get(pos_idx)
+                if my_pos_letter and my_pos_letter in asst_pos_to_slot_idxs:
+                    for slot_idx in asst_pos_to_slot_idxs[my_pos_letter]:
+                        if slot_idx in seat_asst_times[seat_id_str]:
+                            for t in seat_asst_times[seat_id_str][slot_idx]:
+                                person_times[name].append(t)
+
+        # 找出所有重叠时段内的2人组合
+        checked_pairs = set()
+        names_list = list(person_times.keys())
+        for i, name1 in enumerate(names_list):
+            for name2 in names_list[i+1:]:
+                times1 = person_times[name1]
+                times2 = person_times[name2]
+                for t1 in times1:
+                    for t2 in times2:
+                        if times_overlap(t1, t2):
+                            pair = tuple(sorted([name1, name2]))
+                            if pair not in checked_pairs:
+                                checked_pairs.add(pair)
+                                score_sum = 0
+                                for n in pair:
+                                    pdata = persons.get(n, {})
+                                    score_sum += pdata.get('effective_score', pdata.get('score', 0))
+                                if score_sum < required_score:
+                                    seat_name = seat.get('name', seat_id_str)
+                                    warnings.append(RuleWarning(
+                                        RuleType.SCORE,
+                                        f"{seat_name}: {name1}与{name2}时段重叠，分数和不足({score_sum}/{required_score}分)",
+                                        seat_id_str
+                                    ))
+
     return warnings
 
 
@@ -754,49 +798,43 @@ def check_c1_c2_rules(selections: Dict[str, List[str]], seats: Dict, persons: Di
         # 每个人负责: 位置的管制时段 + asst_position对应位置的助理时段
         person_times = {}  # {name: [time_range, ...]}
         
-        # 首先解析出 slot位置索引 -> asst_position 的映射
-        # 例如: 位置0的asst是'B'表示slot 1，位置1的asst是'C'表示slot 2
+        # 构建 asst_position -> slot_idx 列表的映射
+        # asst_position 表示这个slot的助理时段是给哪个位置的人
+        asst_pos_to_slot_idxs = {}  # {'C': [0], 'D': [1]}
+        index_to_position = {0: 'A', 1: 'B', 2: 'C', 3: 'D'}
         if template_slots and seat_id in template_slots:
             slot_list = template_slots[seat_id]
-            slot_idx_to_asst_pos = {}  # {slot_idx: asst_position}
             for slot_idx, slot in enumerate(slot_list):
-                ctrl_pos = slot.get('ctrl_position', '')
                 asst_pos = slot.get('asst_position', '')
-                if ctrl_pos:
-                    ctrl_idx = position_to_index.get(ctrl_pos)
-                    if ctrl_idx is not None:
-                        slot_idx_to_asst_pos[ctrl_idx] = asst_pos
-        
+                if asst_pos:
+                    if asst_pos not in asst_pos_to_slot_idxs:
+                        asst_pos_to_slot_idxs[asst_pos] = []
+                    asst_pos_to_slot_idxs[asst_pos].append(slot_idx)
+
         # 然后为每个人收集时段
         for pos_idx, name in enumerate(names):
             if not name:
                 continue
-            
+
             level = name_to_level.get(name)
             if not level:
                 continue
-            
+
             if name not in person_times:
                 person_times[name] = []
-            
+
             # 管制时段 - 位置索引pos_idx
             if seat_id in seat_times and pos_idx in seat_times[seat_id]:
                 for t in seat_times[seat_id][pos_idx]:
                     person_times[name].append(t)
-            
-            # 助理时段 - asst_position对应slot的助理时段
-            if seat_id in seat_asst_times and pos_idx in slot_idx_to_asst_pos:
-                asst_pos = slot_idx_to_asst_pos[pos_idx]
-                # asst_position 转为位置索引，然后找那个位置的slot行号
-                asst_idx = position_to_index.get(asst_pos)
-                if asst_idx is not None:
-                    # 找asst_position对应的slot行号
-                    for slot_idx, slot in enumerate(template_slots[seat_id]):
-                        if slot.get('ctrl_position', '') == asst_pos:
-                            if slot_idx in seat_asst_times[seat_id]:
-                                for t in seat_asst_times[seat_id][slot_idx]:
-                                    person_times[name].append(t)
-                            break
+
+            # 助理时段 - 根据asst_position找到对应slot的asst_time
+            my_pos_letter = index_to_position.get(pos_idx)
+            if my_pos_letter and my_pos_letter in asst_pos_to_slot_idxs:
+                for slot_idx in asst_pos_to_slot_idxs[my_pos_letter]:
+                    if seat_asst_times.get(seat_id) and slot_idx in seat_asst_times[seat_id]:
+                        for t in seat_asst_times[seat_id][slot_idx]:
+                            person_times[name].append(t)
         
         # C1和C2人员列表（使用set去重）
         c1_names = list(set([n for n in names if n and name_to_level.get(n) == 'C1']))
@@ -976,7 +1014,7 @@ def check_all_rules(selections: Dict[str, List[str]], seats: Dict, persons: Dict
     """
     warnings = []
     warnings.extend(check_duplicate(selections))
-    warnings.extend(check_seat_score(selections, seats, persons))
+    warnings.extend(check_seat_score(selections, seats, persons, template_slots))
     warnings.extend(check_c1_c2_rules(selections, seats, persons, template_slots))
     warnings.extend(check_c1c2_column_limit(selections, seats, persons, template_slots))
     return warnings

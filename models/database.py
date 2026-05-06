@@ -5,11 +5,36 @@
 import sqlite3
 import os
 import re
+import sys
 from datetime import datetime
 
-# 获取脚本所在目录，用于数据库文件
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_FILE = os.path.join(os.path.dirname(SCRIPT_DIR), "scheduler.db")
+
+def get_db_path():
+    """获取数据库路径，兼容开发环境和打包后的多平台"""
+    app_name = "排班管理系统"
+
+    # 打包状态检测（PyInstaller）
+    if getattr(sys, 'frozen', False):
+        base_dir = sys._MEIPASS
+    else:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # 多平台用户数据目录
+    if sys.platform == 'darwin':
+        user_dir = os.path.expanduser(f"~/Library/Application Support/{app_name}")
+    elif sys.platform == 'win32':
+        user_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), app_name)
+    else:
+        # Linux 等其他平台
+        user_dir = os.path.expanduser(f"~/.local/share/{app_name}")
+
+    # 确保目录存在
+    os.makedirs(user_dir, exist_ok=True)
+
+    return os.path.join(user_dir, "scheduler.db")
+
+
+DB_FILE = get_db_path()
 
 
 class Database:
@@ -76,7 +101,7 @@ class Database:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS seats (
                 app_name TEXT PRIMARY KEY,
-                template_id TEXT,
+                template_id INTEGER,
                 available INTEGER DEFAULT 1,
                 persons_count INTEGER DEFAULT 3,
                 required_score INTEGER DEFAULT 5
@@ -86,7 +111,7 @@ class Database:
         # 席位模版表
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS seat_templates (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
                 description TEXT DEFAULT '',
                 time_start TEXT DEFAULT '08:40',
@@ -100,7 +125,7 @@ class Database:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS seat_template_time_slots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                template_id TEXT NOT NULL,
+                template_id INTEGER NOT NULL,
                 shift_name TEXT NOT NULL,
                 ctrl_time TEXT DEFAULT '',
                 ctrl_position TEXT DEFAULT '',
@@ -110,28 +135,39 @@ class Database:
                 FOREIGN KEY (template_id) REFERENCES seat_templates(id) ON DELETE CASCADE
             )
         ''')
-        
+
+        # 席位模版位置表（存储位置顺序）
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS seat_template_positions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                position_name TEXT NOT NULL,
+                position_index INTEGER DEFAULT 0,
+                FOREIGN KEY (template_id) REFERENCES seat_templates(id) ON DELETE CASCADE
+            )
+        ''')
+
         # 初始化默认席位模版
         cursor.execute("SELECT COUNT(*) FROM seat_templates")
         if cursor.fetchone()[0] == 0:
             default_templates = [
-                ("APP_STD_3", "3人标准模版", "08:40", "10:30"),
-                ("APP_STD_4", "4人标准模版", "08:50", "10:40"),
-                ("APP02_TPL", "APP02专用模版", "08:40", "10:30"),
-                ("APP04_TPL", "APP04专用模版", "08:50", "10:40"),
+                (1, "3人标准模版", "08:40", "10:30"),
+                (2, "4人标准模版", "08:50", "10:40"),
+                (3, "APP02专用模版", "08:40", "10:30"),
+                (4, "APP04专用模版", "08:50", "10:40"),
             ]
             cursor.executemany(
                 "INSERT OR IGNORE INTO seat_templates (id, name, time_start, time_end) VALUES (?, ?, ?, ?)",
                 default_templates
             )
             # 默认位置：ABC
-            for tpl_id in ["APP_STD_3", "APP02_TPL"]:
+            for tpl_id in [1, 3]:
                 for i, pos in enumerate(["A", "B", "C"]):
                     cursor.execute(
                         "INSERT INTO seat_template_positions (template_id, position_name, position_index) VALUES (?, ?, ?)",
                         (tpl_id, pos, i)
                     )
-            for tpl_id in ["APP_STD_4", "APP04_TPL"]:
+            for tpl_id in [2, 4]:
                 for i, pos in enumerate(["A", "B", "C", "D"]):
                     cursor.execute(
                         "INSERT INTO seat_template_positions (template_id, position_name, position_index) VALUES (?, ?, ?)",
@@ -204,6 +240,7 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 schedule_date DATE NOT NULL,
                 person_id INTEGER NOT NULL,
+                seat_id TEXT,
                 app_name TEXT NOT NULL,
                 time_slot TEXT NOT NULL,
                 duration_minutes INTEGER DEFAULT 0,
@@ -225,8 +262,32 @@ class Database:
             )
         ''')
 
+        # 应用设置表
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+
         self.conn.commit()
-    
+
+    def get_setting(self, key, default=None):
+        """获取设置值"""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+        return row[0] if row else default
+
+    def set_setting(self, key, value):
+        """设置值"""
+        cursor = self.conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+            (key, str(value))
+        )
+        self.conn.commit()
+
     def init_default_seats(self):
         """初始化默认物理席位"""
         cursor = self.conn.cursor()
@@ -321,27 +382,27 @@ class Database:
         row = cursor.fetchone()
         return dict(row) if row else None
     
-    def add_template(self, template_id, name, description="", time_start="08:40", time_end="10:30"):
+    def add_template(self, template_id, name, description="", time_start="08:40", time_end="10:30", available=1):
         """添加席位模版"""
         cursor = self.conn.cursor()
         try:
             cursor.execute(
-                "INSERT INTO seat_templates (id, name, description, time_start, time_end) VALUES (?, ?, ?, ?, ?)",
-                (template_id, name, description, time_start, time_end)
+                "INSERT INTO seat_templates (id, name, description, time_start, time_end, available) VALUES (?, ?, ?, ?, ?, ?)",
+                (template_id, name, description, time_start, time_end, available)
             )
             self.conn.commit()
             return True, "模版添加成功"
         except sqlite3.IntegrityError as e:
             return False, f"模版已存在: {e}"
     
-    def update_template(self, template_id, name=None, description=None, time_start=None, time_end=None, new_id=None):
+    def update_template(self, template_id, name=None, description=None, time_start=None, time_end=None, new_id=None, available=None):
         """更新席位模版
         template_id: 旧ID（用于定位）
         new_id: 新ID（如果ID变更）"""
         cursor = self.conn.cursor()
         
-        # 如果ID变更了
-        if new_id and new_id != template_id:
+        # 如果ID变更了（注意类型可能不同：int vs str，需要统一比较）
+        if new_id is not None and int(new_id) != int(template_id):
             # 检查新ID是否已存在
             cursor.execute("SELECT id FROM seat_templates WHERE id = ?", (new_id,))
             if cursor.fetchone():
@@ -362,7 +423,9 @@ class Database:
             cursor.execute("UPDATE seat_templates SET time_start = ? WHERE id = ?", (time_start, template_id))
         if time_end:
             cursor.execute("UPDATE seat_templates SET time_end = ? WHERE id = ?", (time_end, template_id))
-        
+        if available is not None:
+            cursor.execute("UPDATE seat_templates SET available = ? WHERE id = ?", (available, template_id))
+
         self.conn.commit()
         return True, "模版更新成功"
 
@@ -901,8 +964,8 @@ class Database:
         ''', (person_id,))
         return cursor.fetchall()
 
-    def get_person_total_hours(self, person_id, days=30):
-        """获取人员最近N天的总上班时长（分钟）"""
+    def get_person_total_count(self, person_id, days=30):
+        """获取人员最近N天的执勤次数"""
         cursor = self.conn.cursor()
         cursor.execute('''
             SELECT COALESCE(SUM(duration_minutes), 0) as total
@@ -923,15 +986,61 @@ class Database:
     def save_schedule(self, schedule_date, assignments):
         """保存排班结果到历史记录
         assignments: [(person_id, app_name, time_slot, duration_minutes), ...]
+        同时更新 person_duty_stats 的 duty_count
         """
         cursor = self.conn.cursor()
         # 先删除当天的记录
         cursor.execute("DELETE FROM schedule_history WHERE schedule_date = ?", (schedule_date,))
-        # 插入新记录
-        cursor.executemany('''
-            INSERT INTO schedule_history (schedule_date, person_id, app_name, time_slot, duration_minutes)
-            VALUES (?, ?, ?, ?, ?)
-        ''', assignments)
+        # 插入新记录，同时更新 person_duty_stats
+        for record in assignments:
+            if len(record) == 5:
+                person_id, seat_id, app_name, time_slot, duration_minutes = record
+            else:
+                person_id, app_name, time_slot, duration_minutes = record
+                seat_id = app_name  # 兼容：main_UI 场景下 seat_id 等于 app_name
+            cursor.execute('''
+                INSERT INTO schedule_history (schedule_date, person_id, seat_id, app_name, time_slot, duration_minutes)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (schedule_date, person_id, seat_id, app_name, time_slot, duration_minutes))
+            # 更新执勤统计（每次导出算1次）
+            cursor.execute('''
+                INSERT INTO person_duty_stats (person_id, app_name, duty_count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(person_id, app_name) DO UPDATE SET duty_count = duty_count + 1
+            ''', (person_id, app_name))
+        self.conn.commit()
+
+    def save_schedule_with_seat_ids(self, schedule_date, assignments):
+        """保存排班结果到历史记录（使用seat_id，scheduler.py导出专用）
+        assignments: [(person_id, seat_id, app_name, time_slot, duration_minutes), ...]
+        duration_minutes 在此上下文中实际是 duty_count（班次计数，1或2）
+        同时更新 person_duty_stats 的 duty_count
+        """
+        cursor = self.conn.cursor()
+        # 先删除当天的记录
+        cursor.execute("DELETE FROM schedule_history WHERE schedule_date = ?", (schedule_date,))
+
+        # 统计每个人每个席位的总执勤次数（因为同一人同一天同一席位可能有多条记录）
+        duty_totals = {}  # {(person_id, app_name): total_duty_count}
+        for person_id, seat_id, app_name, time_slot, duration_minutes in assignments:
+            key = (person_id, app_name)
+            duty_totals[key] = duty_totals.get(key, 0) + duration_minutes
+
+        # 插入历史记录（注意：表结构只有 schedule_date, person_id, app_name, time_slot, duration_minutes）
+        for person_id, seat_id, app_name, time_slot, duration_minutes in assignments:
+            cursor.execute('''
+                INSERT INTO schedule_history (schedule_date, person_id, app_name, time_slot, duration_minutes)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (schedule_date, person_id, app_name, time_slot, duration_minutes))
+
+        # 更新执勤统计：先删除当天的旧统计（避免重复累加），再用新统计覆盖
+        for (person_id, app_name), total_duty in duty_totals.items():
+            cursor.execute('''
+                INSERT INTO person_duty_stats (person_id, app_name, duty_count)
+                VALUES (?, ?, ?)
+                ON CONFLICT(person_id, app_name) DO UPDATE SET duty_count = ?
+            ''', (person_id, app_name, total_duty, total_duty))
+
         self.conn.commit()
 
     def get_time_slots(self, shift_type=None):
