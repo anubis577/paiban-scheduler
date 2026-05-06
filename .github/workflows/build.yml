@@ -29,4 +29,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: 排班管理系统-exe
-          path: dist/排班管理系统.exe
+          path: dist/排班管理系统/
+          retention-days: 5
