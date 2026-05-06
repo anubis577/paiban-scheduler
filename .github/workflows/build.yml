@@ -1,81 +1,32 @@
-# Build Windows EXE and macOS App
-name: Build
+name: Build Windows EXE
 
 on:
-  push:
-    branches: [main]
-  release:
-    types: [created]
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
         run: |
-          pip install pyinstaller openpyxl pillow PyQt5
+          pip install PyQt5 pyinstaller openpyxl pillow
 
-      - name: Build Windows EXE
+      - name: Build EXE
         run: |
-          pyinstaller scheduler.spec --clean --noconfirm
+          pyinstaller scheduler.spec --onefile
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-exe
-          path: dist/排班管理系统/
-          retention-days: 5
-
-  build-macos:
-    runs-on: macos-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Install dependencies
-        run: |
-          pip install pyinstaller pyqt5 openpyxl
-
-      - name: Build macOS App
-        run: |
-          pyinstaller scheduler.spec --clean --noconfirm
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: macos-app
-          path: dist/排班管理系统/
-          retention-days: 5
-
-  create-release:
-    needs: [build-windows, build-macos]
-    runs-on: ubuntu-latest
-    if: github.event_name == 'release'
-    
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: artifacts/**/*
-          body: '排班管理软件 - Windows/macOS 双平台版本'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: 排班管理系统-exe
+          path: dist/排班管理系统.exe
